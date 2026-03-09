@@ -3,7 +3,7 @@ numpy
 scikit-learn==1.7.2
 streamlit==1.55.0
 transformers==5.3.0
-torch==2.5.1+cpu
+torch==2.5.1
 torchvision
 torchaudio
 newspaper3k==0.2.8
