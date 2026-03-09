@@ -1,3 +1,9 @@
+"""
+Fake News Detector — Streamlit Web App
+=======================================
+Run with: streamlit run app.py
+"""
+
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -100,17 +106,30 @@ def load_lr_model():
 
 @st.cache_resource
 def load_bert_model():
-    """Load the fine-tuned DistilBERT model."""
+    """Load DistilBERT from local cache or download from Hugging Face."""
     from transformers import DistilBertTokenizerFast, DistilBertForSequenceClassification
 
+    repo_id   = "MA00100/fake-news-distilbert"
     bert_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bert_model")
 
-    if not os.path.exists(bert_path):
-        st.error("DistilBERT model not found. Run `python train_bert.py` first.")
-        st.stop()
+    # If already downloaded locally, load from disk
+    if os.path.exists(bert_path) and any(
+        f in os.listdir(bert_path) for f in ["model.safetensors", "pytorch_model.bin"]
+    ):
+        tokenizer = DistilBertTokenizerFast.from_pretrained(bert_path)
+        model     = DistilBertForSequenceClassification.from_pretrained(bert_path)
+        model.eval()
+        return tokenizer, model
 
-    tokenizer = DistilBertTokenizerFast.from_pretrained(bert_path)
-    model     = DistilBertForSequenceClassification.from_pretrained(bert_path)
+    # Otherwise download from Hugging Face and cache locally
+    st.info("Downloading DistilBERT model from Hugging Face — one time only (~255MB)...")
+    tokenizer = DistilBertTokenizerFast.from_pretrained(repo_id)
+    model     = DistilBertForSequenceClassification.from_pretrained(repo_id)
+
+    os.makedirs(bert_path, exist_ok=True)
+    tokenizer.save_pretrained(bert_path)
+    model.save_pretrained(bert_path)
+
     model.eval()
     return tokenizer, model
 
@@ -154,7 +173,7 @@ with st.sidebar:
         "Classification threshold",
         min_value=0.1, max_value=0.9,
         value=0.5, step=0.05,
-        help="P(Real) ≥ threshold → classified as Real"
+        help="P(Real) >= threshold -> classified as Real"
     )
 
     show_top_words = st.checkbox(
@@ -187,125 +206,212 @@ else:
     st.info("Using Logistic Regression + TF-IDF — fast classical ML")
 
 
-# Input Form
+# Tabs
 
-with st.form("prediction_form"):
-
-    # URL input
-    url = st.text_input(
-        "Article URL",
-        placeholder="https://www.bbc.com/news/... (optional)"
-    )
-
-    st.markdown("**— or enter manually —**")
-
-    title = st.text_input("Article Title", placeholder="Enter the headline...")
-    body  = st.text_area("Article Body",   placeholder="Paste the full article text here...", height=200)
-    submitted = st.form_submit_button("Analyze Article", use_container_width=True)
+tab1, tab2 = st.tabs(["Single Model", "Compare Models"])
 
 
-# Prediction Logic
+# Tab 1: Single Model
 
-if submitted:
+with tab1:
 
-    # Step 1: scrape URL if provided
-    if url.strip():
-        with st.spinner("Fetching article from URL..."):
-            scraped_title, scraped_body = scrape_article(url.strip())
+    with st.form("prediction_form"):
+        url = st.text_input(
+            "Article URL",
+            placeholder="https://www.bbc.com/news/... (optional)"
+        )
+        st.markdown("**— or enter manually —**")
+        title = st.text_input("Article Title", placeholder="Enter the headline...")
+        body  = st.text_area("Article Body",   placeholder="Paste the full article text here...", height=200)
+        submitted = st.form_submit_button("Analyze Article", use_container_width=True)
 
-        if scraped_title or scraped_body:
-            # URL takes priority — overrides manual input
-            title = scraped_title or title
-            body  = scraped_body  or body
-            st.success(f"Scraped: **{scraped_title}**")
-        else:
-            st.error("Could not fetch the article. The site may be paywalled or blocking scrapers. Try pasting the text manually.")
+    if submitted:
+
+        # Step 1: scrape URL if provided
+        if url.strip():
+            with st.spinner("Fetching article from URL..."):
+                scraped_title, scraped_body = scrape_article(url.strip())
+            if scraped_title or scraped_body:
+                title = scraped_title or title
+                body  = scraped_body  or body
+                st.success(f"Scraped: **{scraped_title}**")
+            else:
+                st.error("Could not fetch the article. The site may be paywalled or blocking scrapers. Try pasting the text manually.")
+                st.stop()
+
+        # Step 2: validate we have something
+        if not title.strip() and not body.strip():
+            st.error("Please enter a URL, title, or article body to analyze.")
             st.stop()
 
-    # Step 2: validate we have something
-    if not title.strip() and not body.strip():
-        st.error("Please enter a URL, title, or article body to analyze.")
+        # Step 3: run prediction
+        with st.spinner("Analyzing..."):
+            if "DistilBERT" in model_choice:
+                tokenizer, bert_model = load_bert_model()
+                prob_real = predict_bert(tokenizer, bert_model, title, body)
+                combined  = None
+            else:
+                pipeline  = load_lr_model()
+                prob_real, combined = predict_lr(pipeline, title, body)
+
+        prob_fake = 1.0 - prob_real
+        is_real   = prob_real >= threshold
+
+        # Result banner
+        if is_real:
+            st.markdown(
+                f"<div class='result-box real-news'>"
+                f"Likely REAL NEWS &nbsp;|&nbsp; Confidence: {prob_real*100:.1f}%"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                f"<div class='result-box fake-news'>"
+                f"Likely FAKE NEWS &nbsp;|&nbsp; Confidence: {prob_fake*100:.1f}%"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+        # Metrics row
+        col1, col2, col3 = st.columns(3)
+        col1.metric("P(Real)", f"{prob_real*100:.1f}%")
+        col2.metric("P(Fake)", f"{prob_fake*100:.1f}%")
+        col3.metric("Threshold", f"{threshold:.2f}")
+
+        # Probability bar chart
+        st.markdown("#### Probability Breakdown")
+        st.bar_chart(
+            pd.DataFrame(
+                {"Probability": [prob_real, prob_fake]},
+                index=["Real News", "Fake News"]
+            )
+        )
+
+        # Top TF-IDF terms (LR only)
+        if show_top_words and combined and "DistilBERT" not in model_choice:
+            st.markdown("#### Most Influential Terms (TF-IDF)")
+            try:
+                vectorizer    = pipeline.named_steps["tfidf"]
+                feature_names = np.array(vectorizer.get_feature_names_out())
+                tfidf_vector  = vectorizer.transform([combined]).toarray()[0]
+                top_indices   = np.argsort(tfidf_vector)[-15:][::-1]
+
+                top_df = pd.DataFrame({
+                    "Term":         feature_names[top_indices],
+                    "TF-IDF Score": tfidf_vector[top_indices].round(4)
+                })
+                st.dataframe(top_df.set_index("Term"), use_container_width=True)
+            except Exception:
+                st.info("Could not extract TF-IDF terms.")
+
+        st.markdown("---")
+        st.caption("This tool is for educational purposes. Always verify news from multiple reputable sources.")
+
+
+# Tab 2: Compare Models
+
+with tab2:
+
+    bert_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bert_model")
+
+    if not os.path.exists(bert_path) or not any(
+        f in os.listdir(bert_path) for f in ["model.safetensors", "pytorch_model.bin"]
+    ):
+        st.warning("DistilBERT model not available locally. Switch to the Single Model tab and select DistilBERT once to trigger the download, then return here.")
         st.stop()
 
-    # Step 3: run prediction
-    with st.spinner("Analyzing..."):
-        if "DistilBERT" in model_choice:
-            tokenizer, bert_model = load_bert_model()
-            prob_real = predict_bert(tokenizer, bert_model, title, body)
-            combined  = None
+    st.markdown("### Run the same article through both models and compare results.")
+
+    with st.form("compare_form"):
+        url_c   = st.text_input("Article URL", placeholder="https://... (optional)")
+        st.markdown("**— or enter manually —**")
+        title_c = st.text_input("Article Title", placeholder="Enter the headline...")
+        body_c  = st.text_area("Article Body",   placeholder="Paste the full article text here...", height=200)
+        compare_submitted = st.form_submit_button("Compare Models", use_container_width=True)
+
+    if compare_submitted:
+
+        # Scrape URL if provided
+        if url_c.strip():
+            with st.spinner("Fetching article..."):
+                scraped_title, scraped_body = scrape_article(url_c.strip())
+            if scraped_title or scraped_body:
+                title_c = scraped_title or title_c
+                body_c  = scraped_body  or body_c
+                st.success(f"Scraped: **{scraped_title}**")
+            else:
+                st.error("Could not fetch article. Try pasting the text manually.")
+                st.stop()
+
+        if not title_c.strip() and not body_c.strip():
+            st.error("Please enter a URL, title, or article body.")
+            st.stop()
+
+        # Run both models
+        with st.spinner("Running both models..."):
+            pipeline        = load_lr_model()
+            prob_real_lr, _ = predict_lr(pipeline, title_c, body_c)
+
+            tokenizer, bert = load_bert_model()
+            prob_real_bert  = predict_bert(tokenizer, bert, title_c, body_c)
+
+        prob_fake_lr   = 1 - prob_real_lr
+        prob_fake_bert = 1 - prob_real_bert
+        is_real_lr     = prob_real_lr   >= threshold
+        is_real_bert   = prob_real_bert >= threshold
+
+        # Side by side results
+        st.markdown("---")
+        col_lr, col_bert = st.columns(2)
+
+        with col_lr:
+            st.markdown("#### Logistic Regression")
+            if is_real_lr:
+                st.markdown(
+                    f"<div class='result-box real-news'>REAL NEWS<br>{prob_real_lr*100:.1f}%</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"<div class='result-box fake-news'>FAKE NEWS<br>{prob_fake_lr*100:.1f}%</div>",
+                    unsafe_allow_html=True
+                )
+            st.metric("P(Real)", f"{prob_real_lr*100:.1f}%")
+            st.metric("P(Fake)", f"{prob_fake_lr*100:.1f}%")
+
+        with col_bert:
+            st.markdown("#### DistilBERT")
+            if is_real_bert:
+                st.markdown(
+                    f"<div class='result-box real-news'>REAL NEWS<br>{prob_real_bert*100:.1f}%</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"<div class='result-box fake-news'>FAKE NEWS<br>{prob_fake_bert*100:.1f}%</div>",
+                    unsafe_allow_html=True
+                )
+            st.metric("P(Real)", f"{prob_real_bert*100:.1f}%")
+            st.metric("P(Fake)", f"{prob_fake_bert*100:.1f}%")
+
+        # Agreement indicator
+        st.markdown("---")
+        if is_real_lr == is_real_bert:
+            st.success("Both models agree on this article.")
         else:
-            pipeline  = load_lr_model()
-            prob_real, combined = predict_lr(pipeline, title, body)
+            st.warning("Models disagree — this article is borderline. Treat the result with caution.")
 
-    prob_fake = 1.0 - prob_real
-    is_real   = prob_real >= threshold
+        # Combined chart
+        st.markdown("#### Confidence Comparison")
+        compare_df = pd.DataFrame({
+            "Logistic Regression": [prob_real_lr,  prob_fake_lr],
+            "DistilBERT":          [prob_real_bert, prob_fake_bert],
+        }, index=["P(Real)", "P(Fake)"])
+        st.bar_chart(compare_df)
 
-    # Result banner
-    if is_real:
-        st.markdown(
-            f"<div class='result-box real-news'>"
-            f"Likely REAL NEWS &nbsp;|&nbsp; Confidence: {prob_real*100:.1f}%"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            f"<div class='result-box fake-news'>"
-            f"Likely FAKE NEWS &nbsp;|&nbsp; Confidence: {prob_fake*100:.1f}%"
-            f"</div>",
-            unsafe_allow_html=True
-        )
-
-    # Metrics row
-    col1, col2, col3 = st.columns(3)
-    col1.metric("P(Real)", f"{prob_real*100:.1f}%")
-    col2.metric("P(Fake)", f"{prob_fake*100:.1f}%")
-    col3.metric("Threshold", f"{threshold:.2f}")
-
-    # Probability bar chart
-    st.markdown("#### Confidence Score")
-
-    confidence = prob_real if is_real else prob_fake
-    label      = "Real" if is_real else "Fake"
-
-    st.markdown(f"""
-    <div style="background:#e9ecef; border-radius:10px; height:28px; width:100%; margin-bottom:8px;">
-        <div style="
-            background: {'#28a745' if is_real else '#dc3545'};
-            width: {confidence*100:.1f}%;
-            height: 100%;
-            border-radius: 10px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-weight: bold;
-            font-size: 0.9rem;
-        ">
-            {confidence*100:.1f}% {label}
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # Top TF-IDF terms (LR only)
-    if show_top_words and combined and "DistilBERT" not in model_choice:
-        st.markdown("#### Most Influential Terms (TF-IDF)")
-        try:
-            vectorizer    = pipeline.named_steps["tfidf"]
-            feature_names = np.array(vectorizer.get_feature_names_out())
-            tfidf_vector  = vectorizer.transform([combined]).toarray()[0]
-            top_indices   = np.argsort(tfidf_vector)[-15:][::-1]
-
-            top_df = pd.DataFrame({
-                "Term":         feature_names[top_indices],
-                "TF-IDF Score": tfidf_vector[top_indices].round(4)
-            })
-            st.dataframe(top_df.set_index("Term"), use_container_width=True)
-        except Exception:
-            st.info("Could not extract TF-IDF terms.")
-
-    st.markdown("---")
-    st.caption("This tool is for educational purposes. Always verify news from multiple reputable sources.")
+        st.markdown("---")
+        st.caption("This tool is for educational purposes. Always verify news from multiple reputable sources.")
 
 
 # Batch Prediction
