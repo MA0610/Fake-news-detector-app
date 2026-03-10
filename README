@@ -1,0 +1,166 @@
+# Fake News Detector
+
+A machine learning web application that detects whether a news article is real or fake using NLP techniques and deep learning. Built as a portfolio project to demonstrate end-to-end ML development from data preprocessing to production deployment.
+
+**Live Demo:** [mafake-news-detector-app.streamlit.app](https://mafake-news-detector-app.streamlit.app)
+
+---
+
+## Overview
+
+This project trains and compares two text classification models on the [Kaggle Fake and Real News Dataset](https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset) (~45,000 articles). Users can paste an article, enter a URL, or upload a CSV to get instant predictions with confidence scores.
+
+---
+
+## Features
+
+- **Single Model Prediction** — classify any article using either model with confidence score and TF-IDF term breakdown
+- **Model Comparison Tab** — run the same article through both models side by side with an agreement indicator
+- **URL Scraping** — paste any news URL and the app extracts the article automatically
+- **Batch Prediction** — upload a CSV of articles and download results
+- **Adjustable Threshold** — tune the classification sensitivity via a sidebar slider
+
+---
+
+## Models
+
+### Logistic Regression + TF-IDF
+- 50,000 features with unigrams and bigrams
+- Sublinear TF scaling and English stop word removal
+- Fast inference — results in under 1 second
+- ~99% accuracy on test set
+
+### DistilBERT (Fine-tuned)
+- Pre-trained `distilbert-base-uncased` fine-tuned for 3 epochs
+- Understands context and word relationships unlike bag-of-words approaches
+- Hosted on [Hugging Face Hub](https://huggingface.co/MA00100/fake-news-distilbert)
+- ~99.4% accuracy on test set
+
+| Model | Accuracy | ROC-AUC |
+|-------|----------|---------|
+| Logistic Regression | ~99.0% | ~0.99 |
+| DistilBERT | ~99.4% | ~0.999 |
+
+---
+
+## NLP Pipeline
+
+```
+Raw Text
+    ↓
+Preprocessing
+    ├─ Lowercase
+    ├─ Remove URLs and mentions
+    ├─ Remove punctuation and digits
+    └─ Collapse whitespace
+    ↓
+TF-IDF Vectorizer          DistilBERT Tokenizer
+    ├─ 50,000 features          ├─ WordPiece tokenization
+    ├─ Bigrams                  ├─ 512 token limit
+    └─ Sublinear TF             └─ Attention mask
+    ↓                           ↓
+Logistic Regression        DistilBERT Classifier
+    ↓                           ↓
+        Probability Score (0-1)
+```
+
+---
+
+## Tech Stack
+
+| Category | Technology |
+|----------|-----------|
+| Language | Python 3.11 |
+| ML / NLP | Scikit-learn, Hugging Face Transformers, PyTorch |
+| Feature Extraction | TF-IDF (sklearn), DistilBERT tokenizer |
+| Web App | Streamlit |
+| Model Hosting | Hugging Face Hub |
+| Deployment | Streamlit Cloud |
+| Web Scraping | newspaper3k |
+
+---
+
+## Project Structure
+
+```
+fake-news-detector/
+├── app.py               # Streamlit web application
+├── train_model.py       # TF-IDF + Logistic Regression training
+├── train_bert.py        # DistilBERT fine-tuning
+├── eda.py               # Exploratory data analysis
+├── requirements.txt
+├── True.csv             # Real news articles (Kaggle)
+└── Fake.csv             # Fake news articles (Kaggle)
+```
+
+---
+
+## Local Setup
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/MA0610/Fake-news-detector-app.git
+cd Fake-news-detector-app
+```
+
+### 2. Create a virtual environment
+```bash
+conda create -n news-env python=3.11
+conda activate news-env
+pip install -r requirements.txt
+```
+
+### 3. Download the dataset
+Download `True.csv` and `Fake.csv` from [Kaggle](https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset) and place them in the project root.
+
+### 4. Train the models
+```bash
+# Train Logistic Regression (~1 minute)
+python train_model.py
+
+# Fine-tune DistilBERT (~20 min with GPU, ~5 hours CPU)
+python train_bert.py
+```
+
+### 5. Run the app
+```bash
+streamlit run app.py
+```
+
+---
+
+## Dataset
+
+| File | Articles | Label |
+|------|----------|-------|
+| True.csv | 21,417 | Real (1) |
+| Fake.csv | 23,481 | Fake (0) |
+
+Articles cover political news from 2015–2018. The dataset is well-balanced making it suitable for binary classification without class weighting adjustments.
+
+---
+
+## Key Design Decisions
+
+**Why DistilBERT over full BERT?** DistilBERT is 40% smaller and 60% faster while retaining 97% of BERT's performance — a better tradeoff for a deployed web app where inference speed matters.
+
+**Why keep Logistic Regression?** It demonstrates understanding of classical ML tradeoffs. On this dataset LR achieves near-identical accuracy to BERT at a fraction of the compute cost, which is worth knowing as a practitioner.
+
+**Why Hugging Face Hub for model hosting?** The fine-tuned model is 255MB — too large for GitHub. Hugging Face Hub provides free model hosting with automatic versioning and the `from_pretrained()` API loads it in one line.
+
+---
+
+## Potential Improvements
+
+- LIME or SHAP explainability to highlight influential words in predictions
+- Add LIAR or GossipCop dataset for better generalization
+- FastAPI backend to expose model as a REST API
+- Prediction history tracking across sessions
+- Model performance metrics dashboard
+
+---
+
+## Author
+
+**Matthew Arboleda**
+[GitHub](https://github.com/MA0610) · [Hugging Face](https://huggingface.co/MA00100)
